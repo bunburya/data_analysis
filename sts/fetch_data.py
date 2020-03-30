@@ -1,11 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+"""Code for fetching, parsing and cleaning data on STS securitisations,
+FVCs, etc.
+"""
+
 from datetime import datetime
 
 import requests
 #from openpyxl import load_workbook
-from pandas import read_excel, ExcelFile, merge
+from pandas import read_excel, ExcelFile, merge, DataFrame, concat
 from numpy import nan
 
 zero_time = datetime(2018, 12, 31)
@@ -22,7 +26,10 @@ class Combo:
             return other in self.values
     
     def __repr__(self):
-        return ' / '.join(map(repr, self.values))
+        return ' / '.join(map(str, self.values))
+    
+    def __str__(self):
+        return repr(self)
     
     def __gt__(self, other):
         return self.values > other
@@ -115,6 +122,8 @@ class RegisterParser:
             if len(c) > 2:
                 if ';' in c:
                     delim = ';'
+                elif ',' in c:
+                    delim = ','
                 else:
                     delim = '\n'
                 row['Originator Country'] = Combo(*[i.strip()[-2:] for i in c.split(delim)])
@@ -137,12 +146,10 @@ class RegisterParser:
     
     def clean_data(self):
         """Perform some manual clean-up on known bad data entries."""
-        
-        # TODO: Fix ISINs
-        
+                
         # Different ways of describing underlying assets
         self.df['Underlying assets'] = self.df['Underlying assets'].str.lower().str.strip()
-        self.df['Underlying assets'].replace(['auto loans /leases', 'auto loans/leases', 'auto loans/ leases', 'auto loans'], 'auto loans / leases', inplace=True)
+        self.df['Underlying assets'].replace(['auto loans /leases', 'auto loans/leases', 'auto  loans/leases', 'auto loans/ leases', 'auto loans'], 'auto loans / leases', inplace=True)
         
         # At least one entry mis-spells "Public"
         self.df['Private or Public'].replace('Publc', 'Public', inplace=True)
@@ -221,9 +228,9 @@ def flatten_by(df, col):
     to_add = []
     flat = df.apply(lambda r: _flatten_combo(r, col, to_add), axis=1)
     flat.dropna(subset=['Unique Securitisation Identifier'], inplace=True)
-    to_add = pd.DataFrame(to_add)
+    to_add = DataFrame(to_add)
     to_add.index.name = 'Notification date to ESMA'
-    flat = pd.concat([flat, to_add]).sort_index()
+    flat = concat([flat, to_add]).sort_index()
     return flat
 
 def print_details(row, register_parser, fvc_parser):

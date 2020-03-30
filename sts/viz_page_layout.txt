@@ -15,7 +15,7 @@
 
 - Originator countries
   - Pie chart
-  - Cumulative number, stacked
+  - Choropleth
   - Number of new per month, stacked
 
 - FVCs
