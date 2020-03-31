@@ -3,6 +3,8 @@
 
 from datetime import datetime
 
+import plotly.express as px
+
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
@@ -79,13 +81,16 @@ app.layout = html.Div(children=[
             'data': [{
                 'values': cd.asset_classes,
                 'labels': cd.asset_classes.index,
-                'type': 'pie'
+                'type': 'pie',
+                'marker': {
+                    'colors': cd.get_colors(cd.asset_classes.index, cd.ac_colormap)
+                }
             }],
             'layout': {
                 'title': 'STS securitisations broken down by type of assets securitised',
-                'color_discrete_map': cd.ac_colormap
             }
         }
+
     ),
     
     html.Div(dcc.Markdown(md.asset_classes_new)),
@@ -97,21 +102,19 @@ app.layout = html.Div(children=[
             'layout': {
                 'barmode': 'stack',
                 'title': 'New STS securitisations by securitised asset class',
-                'color_discrete_map': cd.ac_colormap    # TODO:  Figure out where to put this...
             }
-        },
-        style=dict(color_discrete_map=cd.ac_colormap),
+        }
     ),
     
     html.Div(dcc.Markdown(md.underlying_originator)),
     
     dcc.Graph(
-        id='underlying-originator',
+        id='ac_by_oc',
         figure={
             'data': cd.ac_by_oc,
             'layout': {
                 'barmode': 'stack',
-                'title': 'Underlying assets by country of originator'
+                'title': 'Underlying assets by country of originator',
             }
         }
     ),

@@ -20,7 +20,7 @@ fvc_file = 'data_files/FVC_2019_Q4.xlsx'
 fvc_parser = sts.FVCParser(fvc_file)
 sts_parser = sts.RegisterParser(sts_file, fvc_parser)
 
-def get_stacked_bars(series_or_df, sort=True):
+def get_stacked_bars(series_or_df, colormap=None, sort=True):
     """Takes a Series that has been taken from a DataFrame grouped by
     two columns.  Returns a list of Bars, where the x value (label) is
     the "right" index (level 1) and the y values are the "left" index
@@ -48,11 +48,19 @@ def get_stacked_bars(series_or_df, sort=True):
                 y_data.append(series[y][x])
             except KeyError:
                 y_data.append(None)
-        bars.append(go.Bar(
+        if colormap:
+            bars.append(go.Bar(
             name=str(y),
             x=x_labels,
-            y=y_data
-        ))
+            y=y_data,
+            marker={'color': colormap[y]}
+            ))
+        else:
+            bars.append(go.Bar(
+                name=str(y),
+                x=x_labels,
+                y=y_data
+            ))
     return bars
 
 
@@ -62,11 +70,14 @@ df_pub = df.loc[df['Private or Public'] == 'Public']
 
 # Create colormaps for consistent colouring of countries, asset classes, etc
 def get_colormap(data):
-    if len(data) <= len(colors.D3):
-        pallette = colors.D3
+    if len(set(data)) <= len(colors.D3):
+        pallette = colors.Plotly
     else:
-        pallette = colors.Dark24
-    return {c: pallette[i] for i, c in enumerate(set(data))}
+        pallette = colors.Light24
+    return {c: pallette[i] for i, c in enumerate(sorted(map(str, set(data))))}
+
+def get_colors(values, colormap):
+    return [colormap[v] for v in values]
 
 oc_colormap = get_colormap(df['Originator Country'].dropna())
 ic_colormap = get_colormap(df['Country of residence'].dropna())
@@ -80,8 +91,9 @@ private_public = df.groupby('Private or Public').count()['Unique Securitisation 
 asset_classes = df.groupby('Underlying assets').count()['Unique Securitisation Identifier']
 
 # New securitisations (monthly) (x labels) broken down by asset class (y values
-new_by_ac = get_stacked_bars(df.groupby(['Underlying assets']).resample('M').count())
+new_by_ac = get_stacked_bars(df.groupby(['Underlying assets']).resample('M').count(), colormap=ac_colormap)
 
 # Asset classes (y values) broken down by originator country (x labels)
-ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country').groupby(['Underlying assets', 'Originator Country']).count())
+ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country').groupby(['Underlying assets', 'Originator Country']).count(),
+                            colormap=ac_colormap)
 
