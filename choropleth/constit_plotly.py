@@ -6,10 +6,11 @@ from json import load
 from pandas import DataFrame, read_csv
 import plotly.graph_objects as go
 
-geojson_file = '/home/alan/bin/choropleth/data_files/constituency_bounds/generalised_100m/Constituency_Boundaries__Generalised_100m__OSi_National_Statutory_Boundaries.geojson'
+geojson_file = '/home/alan/bin/data_analysis/choropleth/data_files/constituency_bounds/generalised_100m/Constituency_Boundaries__Generalised_100m__OSi_National_Statutory_Boundaries.geojson'
 popfile = 'data_files/population_data_2016_census.csv'
 
-mapbox_token = 'pk.eyJ1IjoiYnVuYnVyeWEiLCJhIjoiY2sxZjljZjhrMHBhcTNjcGlsOWdkMzJtbSJ9.oCOvixVbNKeTFDgTEZHLLQ'
+with open('mapbox_token') as f:
+    mapbox_token = f.read().strip()
 
 # Get population data
 # GEOGDESC is constituency name, T1_2T is total population

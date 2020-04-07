@@ -2,11 +2,11 @@ introduction = """## Introduction
 
 On 1 January 2019, the Securitisation Regulation came into force in the European Union (EU).  The Securitisation Regulation created a new regulatory regime for securitisations in Europe.  Among other things, it created a new category of securitisations, known as "simple, transparent and standardised" (STS) securitisations.  Securitisations can be classified as STS if they meet certain requirements set out in the Securitisation Regulation (as supplemented by various delegated rules and technical standards).  Investments in STS securitisations receive preferential capital treatment under the EU's capital requirements regulations, reflecting the fact that STS securitisations are considered to be safer than non-STS securitisations.
 
-Broadly speaking, a "securitisation" is a transaction involving the establishment of a special-purpose company or similar legal entity (often referred to as the *issuer*) to acquire assets (such as loans, mortgages, lease receivables, trade receivables, etc) from one or more third parties (referred to as *originators*).  The issuer funds its acquisition of the assets by issuing debt securities (often referred to as *notes*) to investors, and payments of principal and interest on the notes are in turn funded by the amounts that the issuer receives in respect of the underlying assets.  The Securitisation Regulation applies to securitisations which involve the tranching of credit risk, ie, where the issuer issues different tranches of notes and, in the event that some of the underlying assets underperform, the more "junior" tranches of notes will incur losses before the more "senior" tranches.
+Broadly speaking, a "securitisation" is a transaction involving the establishment of a special-purpose company or similar legal entity (often referred to as the *issuer*) to acquire assets (such as loans, mortgages, lease receivables, trade receivables, etc) from one or more third parties (referred to as *originators*).  The issuer funds its acquisition of the assets by issuing debt securities (often referred to as *notes*) to investors, and payments of principal and interest on the notes are in turn funded by the amounts that the issuer receives in respect of the underlying assets.  The Securitisation Regulation applies to securitisations which involve the tranching of credit risk, ie, where the issuer issues different tranches of notes and, in the event that some of the underlying assets underperform, the more "junior" tranches of notes will incur losses before the more "senior" tranches.  
 
 More information about the Securitisation Regulation and the STS regime can be found on [the website of the European Securities and Markets Authority (ESMA)](https://www.esma.europa.eu/policy-activities/securitisation)
 
-When a securitisation is notified to ESMA as being an STS securitisation, ESMA publishes certain details about that securitisation on its website.  Those details are currently published as [a spreadsheet](https://www.esma.europa.eu/policy-activities/securitisation/simple-transparent-and-standardised-sts-securitisation).  This page visualises some of the data that ESMA has published about STS securitisations.
+When a securitisation is notified to ESMA as being an STS securitisation, ESMA publishes certain details about that securitisation on its website.  Those details are currently published as [a spreadsheet](https://www.esma.europa.eu/policy-activities/securitisation/simple-transparent-and-standardised-sts-securitisation).  This page visualises some of the data that ESMA has published about STS securitisations.  Of course, there are many securitisations which are not STS securitisations, and they are not discussed here.  On this page, where we refer to securitisations, we are referring specifically to STS securitisations.
 
 Unless stated otherwise, the data visualised here ranges from the beginning of 2019 to the end of March 2020.
 
@@ -14,7 +14,7 @@ You should also bear in mind that the charts on this page give a breakdown of ST
 
 """
 
-number_sts = """## Number of STS securitisations
+stss_count = """## Number of STS securitisations
 
 Below you can see the cumulative number of notified STS securitisations over the time period, as well as the number of new STS securitisations that were notified to ESMA each month.  As you can see, although the Securitisation Regulation came into force on 1 January 2019, the first STS securitisations did not take place until March 2019.
 """
@@ -30,14 +30,23 @@ Because of the limited amount of information available about private STS securit
 
 asset_classes_pie = """## Underlying assets
 
-ESMA publishes information about the types of underlying assets that are being securitised.  You can see the breakdown in the pie chart below.  Note that, because ESMA publishes this information about all STS securitisations (public and private), the pie chart includes private securitisations.
+ESMA publishes information about the types of underlying assets that are being securitised.  You can see the breakdown in the pie chart below.  Note that, because ESMA publishes this information about all STS securitisations (public and private), the pie chart includes private securitisations.  Auto loans and leases are the asset class most commonly securitised in STS securitisations, followed closely by residential mortgages and then by trade receivables.
 """
 
-asset_classes_new = """The below bar chart demonstrates how many new STS securitisations in each month involved each asset class."""
+new_by_ac = """The below bar chart demonstrates how many new STS securitisations in each month involved each asset class."""
 
-underlying_originator = """Below you will find a bar chart breaking down each category of asset by how many STS securitisations of that asset type involved originators from each country (note that some securitisations involve multiple originators, from different countries).  Unlike the pie chart above, this chart only deals with public securitisatons, where details of the originator have been published by ESMA."""
+stss_by_oc = """## Originator countries
 
+Below you can see a pie chart (and below that, a "heatmap" of Europe) showing how many STS securitisations involved originators from each country.  The UK tops this list, with about a third of all STS securitisations involving an originator from that country."""
 
-originator_count = """## Originator countries
+oc_vs_gdp = """If we plot the number of securitisations involving originators from a country against that country's GDP, we can see a moderate positive correlation between the size of a country's economy and the number of STS securitisations involving originators from that country (Pearson correlation coefficient of **{corr}**)."""
 
-Below you can see a pie chart showing how many STS securitisations involved originators from each country."""
+ac_by_oc = """Below you will find a bar chart showing what asset classes where securitised by originators for each country.  You can see, for example, that the the UK and the Netherlands, residential mortgage securitisations are the most common, whereas in Germany, auto loans and leases are the most commonly securitised asset class."""
+
+new_by_oc = """And the below bar chart breaks down the number of new securitisations per month by country of originator."""
+
+fvc = """## Euro area issuer data
+
+The data published by ESMA includes certain details (including country) of the *originators* in respect of each STS securitisation, but it does not currently include details of the *issuers* (which may be based in different countries to the respective originators).  In the euro area, entities which act as issuers in securitisations are typically required to register with their national financial regulators as "financial vehicle corporations" (FVCs).  Certain details of these FVCs are [published](https://www.ecb.europa.eu/stats/financial_corporations/list_of_financial_institutions/html/index.en.html) by the European Central Bank (ECB) on a quarterly basis.  By cross-referencing the International Securities Identification Numbers (ISINs) specified in the ESMA data against the FVC data, we can get some details of the relevant issuer entities.
+
+The charts in this section focus only on STS securitisations where the issuer is included in the FVC data.  The data used in this section is therefore limited in two key ways:  *first*, it only includes securitisations notified to ESMA in 2019 (because FVC data for Q1 2020 has not yet been published), and *second*, it only includes securitisations where the issuer is based in a euro area jurisdiction.  Notably, issuers based in the UK will not be included in this data.  For reference, securitisations where the issuer is an FVC represent **{fvc_pct}%** of all public STS securitisations in 2019."""

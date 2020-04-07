@@ -18,16 +18,20 @@ external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
 
+# TODO:
+# - handle faulty FVC issuer data (no ISIN) by checking against name.
+# - may need to detect and standardise common prefixes
+
 app.layout = html.Div(children=[
     html.H1(
-        children='One year of simple, transparent and standardised securitisations in the European Union',
+        children='Simple, transparent and standardised securitisations in the European Union',
         style={
             'textAlign': 'center'
         }),
 
     html.Div(dcc.Markdown(md.introduction)),
     
-    html.Div(dcc.Markdown(md.number_sts)),
+    html.Div(dcc.Markdown(md.stss_count)),
 
     dcc.Graph(
         id='cumul_count',
@@ -93,7 +97,7 @@ app.layout = html.Div(children=[
 
     ),
     
-    html.Div(dcc.Markdown(md.asset_classes_new)),
+    html.Div(dcc.Markdown(md.new_by_ac)),
     
     dcc.Graph(
         id='new_by_ac',
@@ -106,7 +110,51 @@ app.layout = html.Div(children=[
         }
     ),
     
-    html.Div(dcc.Markdown(md.underlying_originator)),
+    html.Div(dcc.Markdown(md.stss_by_oc)),
+    
+    dcc.Graph(
+        id='stss_by_oc_pie',
+        figure={
+            'data': [{
+                'values': cd.stss_by_oc,
+                'labels': cd.stss_by_oc.index,
+                'type': 'pie',
+                'marker': {
+                    'colors': cd.get_colors(cd.stss_by_oc.index, cd.oc_colormap)
+                }
+            }],
+            'layout': {
+                'title': 'STS securitisations by country of originator'
+            }
+        }
+    ),
+    
+    dcc.Graph(
+        id='stss_by_oc_choro',
+        figure=cd.stss_by_oc_choro
+    ),
+    
+    html.Div(dcc.Markdown(md.oc_vs_gdp.format(
+        corr=round(cd.oc_vs_gdp_corr, 3),
+        corr_ex_uk=round(cd.oc_vs_gdp_corr_ex_gb, 3))
+    )),
+    
+    dcc.Graph(
+        id='oc_vs_gdp',
+        figure={
+            'data': [{
+                'x': cd.oc_vs_gdp['GDP'],
+                'y': cd.oc_vs_gdp['Unique Securitisation Identifier'],
+                'text': cd.oc_vs_gdp.index,
+                'mode': 'markers'
+            }],
+            'layout': {
+                'title': 'STS securitisations vs GDP (€million)'
+            }
+        }
+    ),
+    
+    html.Div(dcc.Markdown(md.ac_by_oc)),
     
     dcc.Graph(
         id='ac_by_oc',
@@ -118,7 +166,21 @@ app.layout = html.Div(children=[
             }
         }
     ),
-                
+    
+    html.Div(dcc.Markdown(md.new_by_oc)),
+    
+    dcc.Graph(
+        id='new_by_oc',
+        figure={
+            'data': cd.new_by_oc,
+            'layout': {
+                'barmode': 'stack',
+                'title': 'New securitisations by country of originator'
+            }
+        }
+    ),
+    
+    html.Div(dcc.Markdown(md.fvc.format(fvc_pct=round(cd.fvc_as_pct, 2))))
     
 ])
 
