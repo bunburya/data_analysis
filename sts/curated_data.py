@@ -16,10 +16,11 @@ from plotly.express.colors import qualitative as colors
 import fetch_data as sts
 
 sts_file = 'data_files/esma33-128-760_securitisations_designated_as_sts_as_from_01_01_2019_regulation_2402_2017.xlsx'
-fvc_file = 'data_files/FVC_2019_Q4.xlsx'
+sts_parser = sts.RegisterParser(sts_file)
 
-fvc_parser = sts.FVCParser(fvc_file)
-sts_parser = sts.RegisterParser(sts_file, fvc_parser)
+# Get main DataFrames we will be working on
+df = sts.add_issuer_data(sts_parser.df)
+df_pub = df.loc[df['Private or Public'] == 'Public']
 
 def get_stacked_bars(series_or_df, colormap=None, sort=True):
     """Takes a Series that has been taken from a DataFrame grouped by
@@ -70,12 +71,6 @@ def get_map(values):
     new_map = deepcopy(sts.map_data)
     new_map['features'] = list(filter(lambda f: f['id'] in values, new_map['features']))
     return new_map
-
-df = sts_parser.get_between(to_date=datetime(2020, 3, 31))
-df_2019 = sts_parser.get_between(to_date=datetime(2019, 12, 31))
-df_2019_pub = df_2019.loc[df_2019['Private or Public'] == 'Public'].apply(sts.add_uk_issuer_data, axis=1)
-
-df_pub = df.loc[df['Private or Public'] == 'Public']
 
 # Create colormaps for consistent colouring of countries, asset classes, etc
 # NOTE:  We convert values to str in these functions to deal with Combos
@@ -142,7 +137,3 @@ ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country').groupby
 new_by_oc = get_stacked_bars(df_pub.groupby(['Originator Country']).resample('M').count(),
                             colormap=oc_colormap)
 
-# FVC data
-
-fvc_data = df_2019_pub[pd.notnull(df_2019_pub['Country of residence'])]
-fvc_as_pct = 100 * len(fvc_data)/len(df_2019_pub)

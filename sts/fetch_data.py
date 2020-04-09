@@ -5,9 +5,17 @@
 FVCs, etc.
 """
 
-from json import load
-from datetime import datetime
+import logging
+from json import load, loads
+from datetime import datetime, timedelta
 from csv import reader
+from typing import List, Set, Tuple, Dict, Collection
+from zipfile import ZipFile
+from os import mkdir, listdir
+from os.path import join, exists
+from io import BytesIO
+
+from lxml import etree
 
 import requests
 #from openpyxl import load_workbook
@@ -15,12 +23,13 @@ from pandas import read_excel, ExcelFile, merge, DataFrame, concat
 import pandas as pd
 from numpy import nan
 
-from companies_house.api import CompaniesHouseAPI
+logging.basicConfig(level=logging.INFO)
 
 zero_time = datetime(2018, 12, 31)
+data_dir = 'data_files'
 
 # Dicts mapping ISO codes to full country names,and vice versa
-csv_file = 'data_files/iso2_codes.csv'
+csv_file = join(data_dir, 'iso2_codes.csv')
 iso_to_name = {}
 name_to_iso = {}
 with open(csv_file) as f:
@@ -33,7 +42,7 @@ with open(csv_file) as f:
         name_to_iso[name] = iso
 
 # Map data
-map_file = 'data_files/eur_map_data/CNTR_RG_20M_2016_4326.geojson'
+map_file = join(data_dir, 'eur_map_data', 'CNTR_RG_20M_2016_4326.geojson')
 with open(map_file) as f:
     map_data = load(f)
     
@@ -45,67 +54,12 @@ with open('mapbox_token') as f:
     mapbox_token = f.read().strip()
 
 # GDP data
-gdp_file = 'data_files/eu_gdp_data.xlsx'
+gdp_file = join(data_dir, 'eu_gdp_data.xlsx')
 gdp_data = read_excel(gdp_file, "Sheet 3", skiprows=8, header=0).set_index('TIME')['2019']
 gdp_data.rename(index={'Germany (until 1990 former territory of the FRG)': 'Germany'}, inplace=True)
 gdp_data.rename(index=name_to_iso, inplace=True)
 gdp_data = gdp_data.reindex(iso_to_name.keys())
-
-SUFFIXES = {
-    'dac': 'dac',
-    'd.a.c.': 'dac',
-    'designated activity company': 'dac',
-    'plc': 'plc',
-    'p.l.c.': 'plc',
-    'public limited company': 'plc',
-    'limited': 'limited',
-    'ltd': 'limited',
-    'ltd.': 'limited',
-    'bv': 'bv',
-    'b.v.': 'bv',
-    'sa': 'sa',
-    's.a.': 'sa',
-    'srl': 'srl',
-    's.r.l.': 'srl',
-    'compartment': 'compartment'
-}
-
-def _find_suffix(name: list, suffix: list) -> int or None:
-    if len(suffix) == 1:
-        try:
-            return name.index(suffix[0])
-        except ValueError:
-            return None
-    elif len(suffix) > 1:
-        for i in range(1, len(name) - len(suffix) + 1):
-            if name[i:i+len(suffix)] == suffix:
-                return i
-        return None
-
-def normalize_name(name: str):
-    if (not name) or pd.isnull(name):
-        # name is empty, None, null value etc
-        return name
-    name_lower = name.lower()
-    name_tokens = name_lower.split()
-    normalized = []
-    for suffix in SUFFIXES:
-        suffix_tokens = suffix.split()
-        i = _find_suffix(name_tokens, suffix_tokens)
-        if i is not None:
-            for word in name_tokens[:i]:
-                normalized.append(word)
-            #normalized.append(SUFFIXES[suffix])
-            #if suffix == 'compartment':
-            #    for word in name_tokens[i+1:]:
-            #        normalized.append(word)
-            return ' '.join(normalized)
-    return name_lower
-
-def apply_norm_name(row, unnorm_col, norm_col):
-    row[norm_col] = normalize_name(row[unnorm_col])
-    return row
-            
+      
 class Combo:
     
     def __init__(self, *values):
@@ -132,81 +86,148 @@ class Combo:
     def __hash__(self):
         return hash(tuple(self.values))
     
+    def __iter__(self):
+        return iter(self.values)
+    
     def add(self, *args, **kwargs):
         self.values.add(*args, **kwargs)
 
-class FVCParser:
+class FIRDSParser:
     
-    NAME_REPLACE = {
-        'Tulip Mortgage Funding 2019-I B.V.': 'Tulip Mortgage Funding 2019-1 B.V.',
-        'MASTER CREDIT CARDS PASS COMPARTIMENT FRANCE': 'MASTER CREDIT CARDS PASS COMPARTMENT FRANCE'
-    }
+    # See: https://www.esma.europa.eu/sites/default/files/library/esma65-11-1193_firds_reference_data_reporting_instructions_v2.1.pdf
+    # XML structure (ignoring unwanted nodes):
+    # - BizData
+    #   - Hdr
+    #   - Pyld
+    #     - Document
+    #       - FinInstrmRptgRefDataRpt
+    #         - RptHdr
+    #         - RefData (repeats for each ISIN)
+    #           - FinInstrmGnlAttrbts (RefData[0])
+    #             - Id (FinInstrmGnlAttrbts[0]): text = ISIN
+    #             - NtnlCcy (FinInstrmGnlAttrbts[4]): text = notional currency
+    #           - Issr (RefData[1]): text = issuer LEI
+    #           - TradgVnRltdAttrbts (RefData[2])
+    #             - Id (TradgVnRltdAttrbts[0]): text = trading venue MIC
+    #           - TechAttrbts (RefData[4])
+    #             - RlvntCmptntAuthrty (TechAttrbts[0]): text = country of RCA
     
-    def __init__(self, fpath):
-        self.fvc_ws = read_excel(fpath, 0)
-        self.isin_ws = read_excel(fpath, 1)
-        self.df = self.fvc_ws.copy(deep=True)
-        self.clean_data()
-        norm_name_col = 'Name (normalised)'
-        self.df[norm_name_col] = None
-        self.df = self.df.apply(lambda r: apply_norm_name(r, 'Name', norm_name_col), axis=1)
-        isins = []
-        #self.fvc_ws.apply(lambda r: isins.append(r['ISIN']
-    
-    def clean_data(self):
-        
-        # Mis-spelled FVC names
-        self.df['Name'].replace(self.NAME_REPLACE, inplace=True)
-        
-    
-    def get_id_by_isin(self, isin):
-        #print('getting ID for ISIN:', isin)
-        try:
-            _id = self.isin_ws[self.isin_ws['ISIN'] == isin]['ID'].iloc[0]
-            return _id
-        except IndexError:
-            #print('no ID found')
-            return None
-    
-    def get_fvc_by_id(self, _id):
-        #print('getting FVC by ID:', _id)
-        if _id is None:
-            return None
-        fvc = self.df[self.df['ID'] == _id]
-        #print('FVC:', fvc)
-        return fvc
-    
-    def get_fvc_by_isin(self, isin):
-        return self.get_fvc_by_id(self.get_id_by_isin(isin))
-    
-    def get_fvc_by_name(self, name):
-        results = self.df[self.df['Name (normalised)'] == name]
-        if len(results) == 0:
-            return None
-        elif len(results) > 1:
-            raise ValueError(f'Found two results for name {name}: {results}')
-        else:
-            return results.iloc[0]
-        
-class RegisterParser:
-    
-    
-    FVC_COLS = ['Country of residence', 'LEI', 'Name', 'Address',
-                'Nature of securitisation', 'Management company country of residence',
-                'Management company LEI', 'Management company name']
+    Q_URL = ('https://registers.esma.europa.eu/solr/esma_registers_firds_files/'
+            'select?q=*&fq=publication_date:%5B{from_year}-{from_month}-'
+            '{from_day}T00:00:00Z+TO+{to_year}-{to_month}-{to_day}T23:59:59Z%5D'
+            '&wt=xml&indent=true&start=0&rows=100')
 
+    GLEIF_URL = 'https://leilookup.gleif.org/api/v2/leirecords?lei='
+
+    def __init__(self, _data_dir: str = None):
+        self.data_dir = _data_dir
+        if (_data_dir is not None) and (not exists(_data_dir)):
+            mkdir(_data_dir)
+    
+    def get_file_urls(self, from_date: datetime = None, to_date: datetime = None) -> List[str]:
+        if from_date is None:
+            to_date = datetime.today()
+            from_date = to_date - timedelta(weeks=1)
+        elif to_date is None:
+            to_date = from_date
+        url = self.Q_URL.format(
+            from_year=from_date.year,
+            from_month=from_date.month,
+            from_day=from_date.day,
+            to_year=to_date.year,
+            to_month=to_date.month,
+            to_day=to_date.day
+        )
+        response = requests.get(url)
+        response.raise_for_status()
+        root = etree.fromstring(response.content)
+        urls = []
+        for entry in root[1]:
+            if entry[3].text.startswith('FULINS_D'): # File name
+                urls.append(entry[1].text) # URL
+        return urls
+    
+    def download_zipped_file(self, url: str, to_dir: str = None) -> str:
+        if to_dir is None:
+            to_dir = self.data_dir
+        response = requests.get(url)
+        response.raise_for_status()
+        zipfile = ZipFile(BytesIO(response.content))
+        name = zipfile.namelist()[0]
+        zipfile.extractall(path=to_dir)
+        return join(to_dir, name)
+    
+    def download_xml_files(self, from_date: datetime = None, to_date: datetime = None, to_dir: str = None) -> List[str]:
+        fpaths = []
+        for fpath in self.get_file_urls(from_date, to_date):
+            fpaths.append(self.download_zipped_file(fpath, to_dir))
+        return fpaths
+    
+    def get_xml_files(self, data_dir: str = None, force_dl: bool = False) -> List[str]:
+        logging.info('Getting FIRDS XML files.')
+        if data_dir is None:
+            data_dir = self.data_dir
+        xml_files = [join(data_dir, f) for f in listdir(data_dir) if f.endswith('.xml')]
+        if (not xml_files) or force_dl:
+            for f in xml_files:
+                remove(f)
+            return self.download_xml_files(to_dir=data_dir)
+        else:
+            return xml_files
+    
+    def search_isins(self, isins: Set[str], fpath: str) -> Tuple[Dict[str, Dict[str, str]], Set[str]]:
+        results = {}
+        missing = isins.copy()
+        for event, elem in etree.iterparse(fpath):
+            if elem.tag.endswith('}RefData'):
+                isin = elem[0][0].text
+                if isin in missing:
+                    currency = elem[0][4].text
+                    lei = elem[1].text
+                    tv = elem[2][0].text
+                    rca = elem[4][0].text
+                    results[isin] = {
+                        'Currency': currency,
+                        'Issuer LEI': lei,
+                        'Trading Venue': tv,
+                        'Competent Authority': rca,
+                    }
+                    missing.remove(isin)
+                elem.clear()
+        return results, missing
+                
+    def search_all_files(self, isins: Set[str], fpaths: List[str]) -> Tuple[Dict[str, Tuple[str]], Set[str]]:
+        logging.info('Searching FIRDS XML files.')
+        results = {}
+        missing = isins.copy()
+        for fpath in fpaths:
+            _results, _missing = self.search_isins(missing, fpath)
+            results.update(_results)
+            missing = _missing
+        return results, missing
+    
+    def get_issuers(self, leis: Collection[str]) -> List[str]:
+        logging.info('Getting issuer data from GLEIF.')
+        leis = list(leis)
+        results = []
+        for i in range(0, len(leis), 200):
+            subset = leis[i:i+200]
+            url = self.GLEIF_URL + ','.join(subset)
+            results += loads(requests.get(url).content)
+        return results
+
+
+class RegisterParser:
+
+    URL = ( 
+        'https://www.esma.europa.eu/sites/default/files/library/'
+        'esma33-128-760_securitisations_designated_as_sts_as_from_01_01_2019_regulation_2402_2017.xlsx'
+    )
+    
     OC_REPLACE = {
         'Italy': 'IT',
         'UK': 'GB'
     }
-    
-    NAME_REPLACE = {
-        'Brass No. 8 PLC': 'Brass No.8 PLC',
-        'Bumper UK 2019-1': 'Bumper UK 2019-1 Finance'
-    }
-        
-    def _add_normalized_names(self, row):
-        row['Securitisation Name (normalised)'] = normalize_name(row['Securitisation Name'])
     
     def _fix_isins(self, row):
         isin_col = str(row['ISIN code'])
@@ -217,51 +238,6 @@ class RegisterParser:
             # from each item in the resulting list, and return only
             # non-empty items.
             row['ISIN code'] = Combo(*[isin for i in isin_col.split() if (isin := i.strip(';,\t \n'))])
-        return row
-    
-    def _add_fvc_data_by_isin(self, row):
-        usi = row['Unique Securitisation Identifier']
-        isins = self.get_isins_by_usi(usi)
-        if not isins:
-            return row
-        if len(isins) == 1:
-            fvc = self.fvc_parser.get_fvc_by_isin(isins[0])
-            if fvc is not None:
-                for col in self.FVC_COLS:
-                    row[col] = fvc[col].to_string(index=False).strip()
-        else:
-            fvc_data = [set() for _ in self.FVC_COLS]
-            for i in isins:
-                fvc = self.fvc_parser.get_fvc_by_isin(i)
-                if fvc is None:
-                    return row
-                for col, data in zip(self.FVC_COLS, fvc_data):
-                    data.add(fvc[col].to_string(index=False).strip())
-            for col, data in zip(self.FVC_COLS, fvc_data):
-                if len(data) > 1:
-                    row[col] = Combo(*data)
-                else:
-                    row[col] = data.pop()
-        return row
-    
-    def _add_fvc_data_by_name(self, row):
-        name = row['Securitisation Name (normalised)']
-        #name_ex_suffix = name.rsplit(' ', maxsplit=1)[0]
-        fvc = self.fvc_parser.get_fvc_by_name(name)
-        #if fvc is None:
-        #    fvc = self.fvc_parser.get_fvc_by_name(name_ex_suffix)
-        if fvc is not None:
-            for col in self.FVC_COLS:
-                if pd.notnull(fvc[col]):
-                    row[col] = fvc[col].strip()
-        return row
-    
-    def _add_fvc_data(self, row):
-        if row['Private or Public'] == 'Private':
-            return row
-        row = self._add_fvc_data_by_isin(row)
-        if pd.isnull(row['Country of residence']):
-            row = self._add_fvc_data_by_name(row)
         return row
     
     def _fix_originator_country(self, row):
@@ -284,18 +260,14 @@ class RegisterParser:
             pass
         return row
     
-    def __init__(self, fpath, fvc_parser):
-        self.fvc_parser = fvc_parser
-        self.df = read_excel(fpath, skiprows=10, header=0)
+    def __init__(self, firds_parser: FIRDSParser, path: str = None):
+        if path is None:
+            path = self.URL
+        self.df = read_excel(path, skiprows=10, header=0)
         self.df.columns = [c.strip() for c in self.df.columns]
         self.clean_data()
         #self.sts_ws = load_workbook(fpath)['List of STS Securitisations'] # So we can get the hyperlink URL for the STS file
-        norm_name_col = 'Securitisation Name (normalised)'
-        self.df[norm_name_col] = None
-        self.df = self.df.apply(lambda r: apply_norm_name(r, 'Securitisation Name', norm_name_col), axis=1)
-        for col in self.FVC_COLS:
-            self.df[col] = None
-        self.df = self.df.apply(self._fix_isins, axis=1).apply(self._add_fvc_data, axis=1)
+        self.df = self.df.apply(self._fix_isins, axis=1)
     
     def clean_data(self):
         """Perform some manual clean-up on known bad data entries."""
@@ -313,9 +285,9 @@ class RegisterParser:
         # Different ways of describing Originator Country
         self.df['Originator Country'].replace(self.OC_REPLACE, inplace=True)
         
-        # Securitisation names mis-spelled or entered in an unusual format
-        self.df['Securitisation Name'].replace(self.NAME_REPLACE, inplace=True) 
-        
+        # At least one private deal lists "NO" for ISIN, rather than None/nan
+        self.df['ISIN code'].replace('NO', nan)
+                
         # Some countries list multiple originator countries; resolve these to Combos.
         # This also deals with replacement of problematic values for Originator Country
         # (other than Italy, which needs to be fixed before it is called)
@@ -324,12 +296,12 @@ class RegisterParser:
         # Mis-spelled date entry on 31 October 2019
         self.df['Notification date to ESMA'].replace('31/1012019', datetime(2019, 10, 31), inplace=True)
     
-    def get_ws_row_by_usi(self, usi):
+    def get_ws_row_by_usi(self, usi: str):
         for r in self.sts_ws.iter_rows():
             if r[2].value == usi:
                 return r
     
-    def get_link_for_usi(self, usi):
+    def get_link_for_usi(self, usi: str) -> str:
         row = self.get_ws_row_by_usi(usi)
         return r[-1].hyperlink.target
     
@@ -355,68 +327,12 @@ class RegisterParser:
         
         return self.df[(self.df['Notification date to ESMA'] >= from_date) & (self.df['Notification date to ESMA'] <= to_date)].set_index('Notification date to ESMA')
 
-# Add details of UK issuers (by setting the "Country of residence" column to "GB") by querying the
-# Companies House API.  It obviously takes some time to query the API repeatedly, so we separate out
-# this function and call it only on the data we want to check rather than applying it to the whole
-# DataFrame at the start, as we do for FVC data.  For example, it should only be applied on the desired
-# time range, after deuplicates have been removed.
-
-with open('ch_token') as f:
-    ch_token = f.read().strip()
-ch_parser = CompaniesHouseAPI(ch_token)
-
-UK_ABBR_LONG = {
-    'limited': 'ltd',
-    'public limited company': 'plc'
-}
-UK_ABBR_SHORT = {
-    'ltd': 'limited',
-    'plc': 'public limited company'
-}
-
-def _ukco_in_ch_results(name):
-    """Query the Companies House API and check whether the relevant
-    company name appears in the results.  NB, only checks the first
-    "page" of results."""
-    results = ch_parser.search_companies(q=name)
-    for i in results['items']:
-        if i['title'].lower().startswith(name.lower()):
-            return True
-    return False
-    
-def _check_ukco_with_suffix(name, suffix):
-    name = name.lower()
-    if suffix in UK_ABBR_LONG:
-        _long = suffix
-        _short = UK_ABBR_LONG[suffix]
-    elif suffix in UK_ABBR_SHORT:
-        _long = UK_ABBR_SHORT[suffix]
-        _short = suffix
-    else:
-        raise ValueError(f'{suffix} not a recognised suffix')
-    
-    split = name.split(_short)
-    if len(split) == 1:
-        split = name.split(_long)
-    
-    if _ukco_in_ch_results(split[0] + _short):
-        return True
-    elif _ukco_in_ch_results(split[0] + _long):
-        return True
-    else:
-        return False
-       
-def add_uk_issuer_data(row):
-    if pd.notnull(row['Country of residence']):
-        return row
-    name = row['Securitisation Name']
-    if pd.isnull(name):
-        return row
-    for suffix in UK_ABBR_SHORT:
-        if _check_ukco_with_suffix(name, suffix):
-            row['Country of residence'] = 'GB'
-            break
-    return row
+    def download_data(self, to_file: str = None) -> str:
+        data = requests.get(self.URL).raise_for_status().content
+        if to_file:
+            with open(to_file, 'w') as f:
+                f.write(data)
+        return data
 
 # Where certain rows may have Combo values in a particular column, "flatten" out the dataframe by replacing
 # each such row with a number of rows, each of which has one value from the Combo as its value in the relevant
@@ -456,8 +372,83 @@ def flatten_by(df, col):
     flat = concat([flat, to_add]).sort_index()
     return flat
 
-#if __name__ == '__main__':
-#    import sys
-#    fvc_parser = FVCParser(sys.argv[2])
-#    register_parser = RegisterParser(sys.argv[1], fvc_parser)
+# Add issuer data (and certain other data) to a DataFrame.  The data is taken from
+# ESMA's FIRDS database and the GLEIF database.
+
+# Should correspond with the names of the keys in the dicts created by FIRDSParser.get_issuer_data
+# and add_issuer_data below.
+ISSUER_COLS = ['Issuer LEI', 'Issuer Name', 'Issuer Country', 'Currency', 'Trading Venue', 'Competent Authority']
+
+firds_data_dir = join(data_dir, 'firds_data')
+
+class DataNotFoundError(BaseException): pass
+
+def _apply_issuer_data(row, isin_data):
+    isin_val = row['ISIN code']
+    if pd.isnull(isin_val):
+        return row
+    if not isinstance(isin_val, Combo):
+        # One ISIN
+        data = isin_data[isin_val]
+        for col in data:
+            row[col] = data[col]
+    else:
+        # Multiple ISINs, as a Combo.  So we *may* need to create Combos
+        # in the relevant data columns.
+        col_data = {col: [] for col in next(iter(isin_data.values()))}
+        for isin in isin_val:
+            try:
+                data = isin_data[isin]
+            except KeyError:
+                # ISIN isn't in search results; this isn't an issue,
+                # provided there is at least one ISIN in the Combo that
+                # is in the search results.
+                continue
+            for col in data:
+                print(col, data)
+                col_data[col].append(data[col])
+        for col in col_data:
+            data = col_data[col]
+            if len(data) == 1:
+                row[col] = data[0]
+            elif len(data) > 1:
+                row[col] = Combo(data)
+            else:
+                logging.warn('Could not find {} for {}.'.format(col, row['Securitisation Name']))
+    
+    return row
+
+# TESTING PURPOSES ONLY
+import pickle
+dump_file = 'test_data'
+
+def add_issuer_data(df: DataFrame) -> DataFrame:
+    logging.info('Adding issuer data.')
+    for col in ISSUER_COLS:
+        df[col] = None
+    fp = FIRDSParser(firds_data_dir)
+    if exists(dump_file): # TESTING PURPOSES ONLY
+        with open(dump_file, 'rb') as f:
+            isin_data, missing = pickle.load(f)
+    else:
+        isins = set()
+        for i in list(df['ISIN code']):
+            if pd.notnull(i):
+                if isinstance(i, Combo):
+                    isins.update(i.values)
+                else:
+                    isins.add(i)
+        xml_files = fp.get_xml_files()
+        isin_data, missing = fp.search_all_files(isins, xml_files)
+        with open(dump_file, 'wb') as f:
+            pickle.dump((isin_data, missing), f)
+    leis = {isin_data[isin]['Issuer LEI']: isin for isin in isin_data}
+    issuer_data = fp.get_issuers(leis.keys())
+    for issuer in issuer_data:
+        isin = leis[issuer['LEI']['$']]
+        isin_data[isin]['Issuer Name'] = issuer['Entity']['LegalName']['$']
+        isin_data[isin]['Issuer Country'] = issuer['Entity']['LegalJurisdiction']['$']
+    
+    return df.apply(lambda r: _apply_issuer_data(r, isin_data), axis=1)
+    
     
