@@ -8,6 +8,7 @@ import plotly.express as px
 import dash
 import dash_core_components as dcc
 import dash_html_components as html
+import dash_table as dt
 
 import dash_markdown as md
 
@@ -134,10 +135,7 @@ app.layout = html.Div(children=[
         figure=cd.stss_by_oc_choro
     ),
     
-    html.Div(dcc.Markdown(md.oc_vs_gdp.format(
-        corr=round(cd.oc_vs_gdp_corr, 3),
-        corr_ex_uk=round(cd.oc_vs_gdp_corr_ex_gb, 3))
-    )),
+    html.Div(dcc.Markdown(md.oc_vs_gdp.format(corr=round(cd.oc_vs_gdp_corr, 3)))),
     
     dcc.Graph(
         id='oc_vs_gdp',
@@ -149,7 +147,7 @@ app.layout = html.Div(children=[
                 'mode': 'markers'
             }],
             'layout': {
-                'title': 'STS securitisations vs GDP (€million)'
+                'title': 'STS securitisations vs 2019 GDP (€million)'
             }
         }
     ),
@@ -180,7 +178,21 @@ app.layout = html.Div(children=[
         }
     ),
     
-    html.Div(dcc.Markdown(md.fvc.format(fvc_pct=round(cd.fvc_as_pct, 2))))
+    html.Div(dcc.Markdown(md.oc_vs_ic)),
+    
+    dt.DataTable(
+        id='oc_vs_ic',
+        columns=cd.oc_vs_ic_dt_cols,
+        data=cd.oc_vs_ic_dt_data
+    ),
+    
+    html.Div(dcc.Markdown(md.diff_by_ic)),
+    
+    dcc.Graph(
+        id='diff_by_ic_choro',
+        figure=cd.diff_by_ic_choro
+    )
+    
     
 ])
 

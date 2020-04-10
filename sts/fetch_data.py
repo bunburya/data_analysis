@@ -23,7 +23,7 @@ from pandas import read_excel, ExcelFile, merge, DataFrame, concat
 import pandas as pd
 from numpy import nan
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 zero_time = datetime(2018, 12, 31)
 data_dir = 'data_files'
@@ -88,9 +88,25 @@ class Combo:
     
     def __iter__(self):
         return iter(self.values)
+        
+    def __len__(self):
+        return len(self.values)
     
     def add(self, *args, **kwargs):
         self.values.add(*args, **kwargs)
+
+def eq_with_combos(s1, s2):
+    results = []
+    for i, j in zip(s1, s2):
+        if (not isinstance(i, Combo)) and (not isinstance(j, Combo)):
+            results.append(i == j)
+        elif isinstance(i, Combo) and isinstance(j, Combo):
+            results.append(i.values == j.values)
+        elif isinstance(i, Combo):
+            results.append(j in i.values)
+        else:
+            results.append(i in j.values)
+    return pd.Series(results, index=s1.index)
 
 class FIRDSParser:
     
@@ -237,7 +253,13 @@ class RegisterParser:
             # Split the string, strip away a number of common delimiters
             # from each item in the resulting list, and return only
             # non-empty items.
-            row['ISIN code'] = Combo(*[isin for i in isin_col.split() if (isin := i.strip(';,\t \n'))])
+            isins = [isin for i in isin_col.split() if (isin := i.strip(';,\t \n'))]
+            for i in isins:
+                if not self.check_isin(isin):
+                    logging.warn(f'Invalid ISIN: {isin_col} (failed checkdigit test)')
+            row['ISIN code'] = Combo(*isins)
+        else:
+            logging.warn(f'Invalid ISIN: {isin_col} (too short).')
         return row
     
     def _fix_originator_country(self, row):
@@ -260,7 +282,7 @@ class RegisterParser:
             pass
         return row
     
-    def __init__(self, firds_parser: FIRDSParser, path: str = None):
+    def __init__(self, path: str = None):
         if path is None:
             path = self.URL
         self.df = read_excel(path, skiprows=10, header=0)
@@ -274,6 +296,9 @@ class RegisterParser:
         
         # Remove duplicates (keeping the first occurrence, which is the latest in time)
         self.df.drop_duplicates(subset=['Unique Securitisation Identifier'], keep='first', inplace=True)
+
+        # Strip whitespace from the end of string entries in certain columns
+        self.df['Private or Public'] = self.df['Private or Public'].str.strip()
                 
         # Different ways of describing underlying assets
         self.df['Underlying assets'] = self.df['Underlying assets'].str.lower().str.strip()
@@ -285,9 +310,10 @@ class RegisterParser:
         # Different ways of describing Originator Country
         self.df['Originator Country'].replace(self.OC_REPLACE, inplace=True)
         
-        # At least one private deal lists "NO" for ISIN, rather than None/nan
-        self.df['ISIN code'].replace('NO', nan)
-                
+        # Misspelled or misdescribed ISIN codes
+        self.df['ISIN code'].replace('NO', nan, inplace=True)
+        self.df['ISIN code'].replace('FR00013450061', 'FR0013450061', inplace=True)
+
         # Some countries list multiple originator countries; resolve these to Combos.
         # This also deals with replacement of problematic values for Originator Country
         # (other than Italy, which needs to be fixed before it is called)
@@ -295,7 +321,7 @@ class RegisterParser:
         
         # Mis-spelled date entry on 31 October 2019
         self.df['Notification date to ESMA'].replace('31/1012019', datetime(2019, 10, 31), inplace=True)
-    
+                    
     def get_ws_row_by_usi(self, usi: str):
         for r in self.sts_ws.iter_rows():
             if r[2].value == usi:
@@ -333,6 +359,28 @@ class RegisterParser:
             with open(to_file, 'w') as f:
                 f.write(data)
         return data
+    
+    def check_isin(self, isin: str) -> bool:
+        isin = list(isin.upper())
+        checkdigit = int(isin.pop())
+        # Replace country code characters with numbers
+        for i, char in enumerate(isin):
+            char_pos = ord(char)
+            if char_pos in range(65, 91):
+                isin[i] = str(ord(char) - 55)
+        isin = [int(i) for i in ''.join(isin)]
+        # These are considered "odd" and "even" based on a 1-based index
+        odd_chars = isin[::2]
+        even_chars = isin[1::2]
+        if len(isin) % 2:
+            # Odd number of characters
+            odd_chars = [int(c) for c in ''.join([str(i*2) for i in odd_chars])]
+        else:
+            # Even number of characters
+            even_chars = [int(c) for c in ''.join([str(i*2) for i in even_chars])]
+        sum_digits = sum(odd_chars + even_chars)
+        mod10 = sum_digits % 10
+        return ((10 - mod10) % 10) == checkdigit
 
 # Where certain rows may have Combo values in a particular column, "flatten" out the dataframe by replacing
 # each such row with a number of rows, each of which has one value from the Combo as its value in the relevant
@@ -395,7 +443,7 @@ def _apply_issuer_data(row, isin_data):
     else:
         # Multiple ISINs, as a Combo.  So we *may* need to create Combos
         # in the relevant data columns.
-        col_data = {col: [] for col in next(iter(isin_data.values()))}
+        col_data = {col: set() for col in ISSUER_COLS}
         for isin in isin_val:
             try:
                 data = isin_data[isin]
@@ -405,50 +453,75 @@ def _apply_issuer_data(row, isin_data):
                 # is in the search results.
                 continue
             for col in data:
-                print(col, data)
-                col_data[col].append(data[col])
+                col_data[col].add(data[col])
         for col in col_data:
             data = col_data[col]
             if len(data) == 1:
-                row[col] = data[0]
+                row[col] = data.pop()
             elif len(data) > 1:
-                row[col] = Combo(data)
+                row[col] = Combo(*data)
             else:
                 logging.warn('Could not find {} for {}.'.format(col, row['Securitisation Name']))
     
     return row
 
-# TESTING PURPOSES ONLY
-import pickle
-dump_file = 'test_data'
+manual_isin_data = {
+
+    # For some reaason one issuer (Darrowby No. 5 plc) is not appearing
+    # in ESMA's reference data.  This is possibly an error in ESMA's data
+    # or the data sent to it by Euronext Dublin.  So we manually fill in
+    # the reference data for that issuer, and hope that this doesn't arise
+    # again in future...
+
+    'XS2104129486': {
+        'Issuer LEI': '6354003OBLBBE5CKB866',
+        'Currency': 'GBP',
+        'Competent Authority': 'IE',
+        'Trading Venue': 'XMSM'
+    },
+    
+    'XS2104129569': {
+        'Issuer LEI': '6354003OBLBBE5CKB866',
+        'Currency': 'GBP',
+        'Competent Authority': 'IE',
+        'Trading Venue': 'XMSM'
+    }
+}
+
 
 def add_issuer_data(df: DataFrame) -> DataFrame:
     logging.info('Adding issuer data.')
     for col in ISSUER_COLS:
         df[col] = None
     fp = FIRDSParser(firds_data_dir)
-    if exists(dump_file): # TESTING PURPOSES ONLY
-        with open(dump_file, 'rb') as f:
-            isin_data, missing = pickle.load(f)
-    else:
-        isins = set()
-        for i in list(df['ISIN code']):
-            if pd.notnull(i):
-                if isinstance(i, Combo):
-                    isins.update(i.values)
-                else:
-                    isins.add(i)
-        xml_files = fp.get_xml_files()
-        isin_data, missing = fp.search_all_files(isins, xml_files)
-        with open(dump_file, 'wb') as f:
-            pickle.dump((isin_data, missing), f)
-    leis = {isin_data[isin]['Issuer LEI']: isin for isin in isin_data}
+    isins = set()
+    for i in list(df['ISIN code']):
+        if pd.notnull(i):
+            if isinstance(i, Combo):
+                isins.update(i.values)
+            else:
+                isins.add(i)
+    xml_files = fp.get_xml_files()
+    isin_data, missing = fp.search_all_files(isins, xml_files)
+    isin_data.update(manual_isin_data)
+    leis = {}
+    for isin in isin_data:
+        lei = isin_data[isin]['Issuer LEI']
+        if lei in leis:
+            leis[lei].append(isin)
+        else:
+            leis[lei] = [isin]
     issuer_data = fp.get_issuers(leis.keys())
     for issuer in issuer_data:
-        isin = leis[issuer['LEI']['$']]
-        isin_data[isin]['Issuer Name'] = issuer['Entity']['LegalName']['$']
-        isin_data[isin]['Issuer Country'] = issuer['Entity']['LegalJurisdiction']['$']
+        isins = leis[issuer['LEI']['$']] # A list of ISINs (possibly length 1)
+        for isin in isins:
+            isin_data[isin]['Issuer Name'] = issuer['Entity']['LegalName']['$']
+            ic = issuer['Entity']['LegalJurisdiction']['$']
+            if len(ic) > 2:
+                logging.warn(f'Found long issuer country code f{ic}.  Truncating to first two characters.')
+                ic = ic[:2]
+            isin_data[isin]['Issuer Country'] = ic
     
-    return df.apply(lambda r: _apply_issuer_data(r, isin_data), axis=1)
+    return df.apply(lambda r: _apply_issuer_data(r, isin_data), axis=1)#.set_index('Notification date to ESMA')
     
     

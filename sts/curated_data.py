@@ -7,6 +7,9 @@ the Dash app.
 
 from datetime import datetime
 from copy import deepcopy
+from os.path import join, exists
+from pickle import load, dump
+import logging
 
 import pandas as pd
 
@@ -15,11 +18,25 @@ from plotly.express.colors import qualitative as colors
 
 import fetch_data as sts
 
-sts_file = 'data_files/esma33-128-760_securitisations_designated_as_sts_as_from_01_01_2019_regulation_2402_2017.xlsx'
-sts_parser = sts.RegisterParser(sts_file)
+sts_file = join(sts.data_dir, 'esma33-128-760_securitisations_designated_as_sts_as_from_01_01_2019_regulation_2402_2017.xlsx')
 
-# Get main DataFrames we will be working on
-df = sts.add_issuer_data(sts_parser.df)
+# Get main DataFrames we will be working on.  Save full DataFrame down as
+# a "snapshot" so we don't have to go through the process of searching FIRDS
+# data, etc, every time.
+
+snapshot_file = join(sts.data_dir, 'snapshot')
+if exists(snapshot_file):
+    logging.info('Loading data from snapshot.')
+    with open(snapshot_file, 'rb') as f:
+        df = load(f)
+else:
+    logging.info('No data found; building data from sources.')
+    sts_parser = sts.RegisterParser()
+    to_end_march = sts_parser.get_between(to_date=datetime(2020, 3, 31))
+    df = sts.add_issuer_data(to_end_march)
+    with open(snapshot_file, 'wb') as f:
+        dump(df, f)
+
 df_pub = df.loc[df['Private or Public'] == 'Public']
 
 def get_stacked_bars(series_or_df, colormap=None, sort=True):
@@ -85,7 +102,7 @@ def get_colors(values, colormap):
     return [colormap[str(v)] for v in values]
 
 oc_colormap = get_colormap(df['Originator Country'].dropna())
-ic_colormap = get_colormap(df['Country of residence'].dropna())
+ic_colormap = get_colormap(df['Issuer Country'].dropna())
 ac_colormap = get_colormap(df['Underlying assets'].dropna())
 
 cumul_count = df.groupby('Notification date to ESMA').count().cumsum()['Unique Securitisation Identifier']
@@ -127,7 +144,6 @@ oc_vs_gdp['GDP'] = sts.gdp_data
 oc_vs_gdp = oc_vs_gdp.reindex(['Unique Securitisation Identifier', 'GDP'], axis='columns')
 
 oc_vs_gdp_corr = oc_vs_gdp.astype(float).corr().iloc[0][1]
-oc_vs_gdp_corr_ex_gb = oc_vs_gdp.drop('GB').astype(float).corr().iloc[0][1]
 
 # Asset classes (y values) broken down by originator country (x labels)
 ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country').groupby(['Underlying assets', 'Originator Country']).count(),
@@ -136,4 +152,31 @@ ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country').groupby
 # New securitisations (monthly) by country of originator
 new_by_oc = get_stacked_bars(df_pub.groupby(['Originator Country']).resample('M').count(),
                             colormap=oc_colormap)
+
+# Table setting out the number of securitisations with originators in country X vs issuers in country Y
+flat_oc_ic = sts.flatten_by(sts.flatten_by(df_pub, 'Originator Country'), 'Issuer Country')
+oc_vs_ic = pd.crosstab(flat_oc_ic['Originator Country'], flat_oc_ic['Issuer Country'], dropna=False, margins=True)
+oc_vs_ic_dt_cols = [{'id': 'Originator Country', 'name': 'Originator Country'}] + [{'name': c, 'id': c} for c in oc_vs_ic.columns]
+oc_vs_ic_dt_data = oc_vs_ic.to_dict('records')
+for i, c in enumerate(oc_vs_ic.index):
+    oc_vs_ic_dt_data[i]['Originator Country'] = c
+
+diff_oc_ic = df_pub[~sts.eq_with_combos(df_pub['Issuer Country'], df_pub['Originator Country'])]
+diff_by_ic = sts.flatten_by(diff_oc_ic, 'Issuer Country').groupby('Issuer Country').count()['Unique Securitisation Identifier']
+ic_map = get_map(set(diff_by_ic.index))
+diff_by_ic_choro = go.Figure(go.Choroplethmapbox(
+    geojson=ic_map,
+    locations=diff_by_ic.index,
+    z=diff_by_ic,
+    colorscale='Blues',
+    zmin=0,
+    zmax=diff_by_ic.max(),
+    marker_opacity=1,
+    marker_line_width=0.5,
+    name='Number of STS securitisations involving issuers in each country (excluding those where the issuer is in the same country as the originator)'
+))
+diff_by_ic_choro.update_layout(mapbox_style="light", mapbox_accesstoken=sts.mapbox_token,
+    mapbox_zoom=3.5, mapbox_center = {"lat": 55.402021, "lon": 9.613549},
+    scene={'aspectratio': {'x': 100, 'y': 100, 'z': 100}},
+    height=1000, title='Number of STS securitisations involving issuers in each country (excluding those where the issuer is in the same country as the originator)')
 
