@@ -18,7 +18,11 @@
   - Choropleth
   - Number of new per month, stacked
 
-- FVCs
-  - Brief explanation and limitations
-  - Pie chart
+- Issuers
+  - Brief explanation
   - Frequency table
+  - Pie chart
+
+- Currency
+  - Pie chart
+  - Currency vs originator country, stacked

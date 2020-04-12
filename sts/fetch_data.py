@@ -9,7 +9,7 @@ import logging
 from json import load, loads
 from datetime import datetime, timedelta
 from csv import reader
-from typing import List, Set, Tuple, Dict, Collection
+from typing import List, Set, Tuple, Dict, Collection, Any
 from zipfile import ZipFile
 from os import mkdir, listdir
 from os.path import join, exists
@@ -28,11 +28,20 @@ logging.basicConfig(level=logging.DEBUG)
 zero_time = datetime(2018, 12, 31)
 data_dir = 'data_files'
 
+def fetch_data(fpath, url, force_dl=False, binary_data=False):
+    if (not exists(fpath)) or force_dl:
+        response = requests.get(url)
+        response.raise_for_status()
+        mode = 'wb' if binary_data else 'w'
+        with open(fpath, mode) as f:
+            f.write(response.text)
+    return fpath
+
 # Dicts mapping ISO codes to full country names,and vice versa
-csv_file = join(data_dir, 'iso2_codes.csv')
+iso_csv_file = join(data_dir, 'iso2_codes.csv')
 iso_to_name = {}
 name_to_iso = {}
-with open(csv_file) as f:
+with open(iso_csv_file) as f:
     f.readline()
     r = reader(f)
     for iso, name in r:
@@ -40,6 +49,18 @@ with open(csv_file) as f:
             continue
         iso_to_name[iso] = name
         name_to_iso[name] = iso
+
+# Dict mapping MIC codes to full market name
+mic_csv_url = 'https://www.iso20022.org/sites/default/files/2020-03/ISO10383_MIC.csv'
+mic_csv_fpath = join(data_dir, 'mic.csv')
+mic_to_tv_name = {}
+mic_to_tv_country = {}
+with open(fetch_data(mic_csv_fpath, mic_csv_url)) as f:
+    f.readline()
+    r = reader(f)
+    for _, iso, mic, op_mic, _, name, *_ in r:
+        mic_to_tv_name[mic] = name
+        mic_to_tv_country[mic] = iso
 
 # Map data
 map_file = join(data_dir, 'eur_map_data', 'CNTR_RG_20M_2016_4326.geojson')
@@ -57,19 +78,19 @@ with open('mapbox_token') as f:
 gdp_file = join(data_dir, 'eu_gdp_data.xlsx')
 gdp_data = read_excel(gdp_file, "Sheet 3", skiprows=8, header=0).set_index('TIME')['2019']
 gdp_data.rename(index={'Germany (until 1990 former territory of the FRG)': 'Germany'}, inplace=True)
-gdp_data.rename(index=name_to_iso, inplace=True)
-gdp_data = gdp_data.reindex(iso_to_name.keys())
+#gdp_data.rename(index=name_to_iso, inplace=True)
+#gdp_data = gdp_data.reindex(iso_to_name.keys())
       
 class Combo:
     
     def __init__(self, *values):
         self.values = set(values)
     
-    def __equals__(self, other):
+    def __eq__(self, other):
         if isinstance(other, Combo):
             return self.values == other.values
         else:
-            return other in self.values
+            return False
     
     def __repr__(self):
         return ' / '.join(map(str, self.values))
@@ -84,10 +105,10 @@ class Combo:
         return self.values < other
     
     def __hash__(self):
-        return hash(tuple(self.values))
+        return hash(tuple(sorted(self.values)))
     
     def __iter__(self):
-        return iter(self.values)
+        return iter(sorted(self.values))
         
     def __len__(self):
         return len(self.values)
@@ -107,6 +128,16 @@ def eq_with_combos(s1, s2):
         else:
             results.append(i in j.values)
     return pd.Series(results, index=s1.index)
+
+def replace_with_combo(_from: Any, replacements: dict) -> Any:
+    if isinstance(_from, Combo):
+        replaced = Combo(*[replacements.get(i, i) for i in _from])
+        return replaced
+    else:
+        return replacements.get(_from, _from)
+
+def replace_series_with_combos(series: pd.Series, replacements: dict) -> pd.Series:
+    return pd.Series([replace_with_combo(i, replacements) for i in series], index=series.index)
 
 class FIRDSParser:
     
@@ -201,11 +232,15 @@ class FIRDSParser:
                     currency = elem[0][4].text
                     lei = elem[1].text
                     tv = elem[2][0].text
+                    tv_full = mic_to_tv_name[tv]
+                    tv_country = mic_to_tv_country[tv]
                     rca = elem[4][0].text
                     results[isin] = {
                         'Currency': currency,
                         'Issuer LEI': lei,
                         'Trading Venue': tv,
+                        'Trading Venue (full)': tv_full,
+                        'Trading Venue Country': tv_country,
                         'Competent Authority': rca,
                     }
                     missing.remove(isin)
@@ -290,6 +325,8 @@ class RegisterParser:
         self.clean_data()
         #self.sts_ws = load_workbook(fpath)['List of STS Securitisations'] # So we can get the hyperlink URL for the STS file
         self.df = self.df.apply(self._fix_isins, axis=1)
+        self.df['Originator Country (full)'] = replace_series_with_combos(self.df['Originator Country'], iso_to_name)
+        
     
     def clean_data(self):
         """Perform some manual clean-up on known bad data entries."""
@@ -303,6 +340,11 @@ class RegisterParser:
         # Different ways of describing underlying assets
         self.df['Underlying assets'] = self.df['Underlying assets'].str.lower().str.strip()
         self.df['Underlying assets'].replace(['auto loans /leases', 'auto loans/leases', 'auto  loans/leases', 'auto loans/ leases', 'auto loans'], 'auto loans / leases', inplace=True)
+        self.df['Underlying assets'].replace('sme loans', 'SME loans', inplace=True)
+        
+        # Fix column name and values for non/ABCP transactions
+        self.df.rename({'Non-ABCP/      ABCP transaction/ ABCP Programme': 'ABCP status'}, axis=1, inplace=True)
+        self.df['ABCP status'].replace(['Non-ABCP', 'Non-ABCP transaction', 'Non-aBCP', 'non-ABCP', 'non-ABCP '], 'Non ABCP', inplace=True)
         
         # At least one entry mis-spells "Public"
         self.df['Private or Public'].replace('Publc', 'Public', inplace=True)
@@ -381,7 +423,7 @@ class RegisterParser:
         sum_digits = sum(odd_chars + even_chars)
         mod10 = sum_digits % 10
         return ((10 - mod10) % 10) == checkdigit
-
+                
 # Where certain rows may have Combo values in a particular column, "flatten" out the dataframe by replacing
 # each such row with a number of rows, each of which has one value from the Combo as its value in the relevant
 # column.  This allows us to accurately count, eg, the number of securitisations which have a country as
@@ -425,7 +467,7 @@ def flatten_by(df, col):
 
 # Should correspond with the names of the keys in the dicts created by FIRDSParser.get_issuer_data
 # and add_issuer_data below.
-ISSUER_COLS = ['Issuer LEI', 'Issuer Name', 'Issuer Country', 'Currency', 'Trading Venue', 'Competent Authority']
+ISSUER_COLS = ['Issuer LEI', 'Issuer Name', 'Issuer Country', 'Currency', 'Trading Venue', 'Trading Venue (full)', 'Trading Venue Country', 'Competent Authority']
 
 firds_data_dir = join(data_dir, 'firds_data')
 
@@ -522,6 +564,12 @@ def add_issuer_data(df: DataFrame) -> DataFrame:
                 ic = ic[:2]
             isin_data[isin]['Issuer Country'] = ic
     
-    return df.apply(lambda r: _apply_issuer_data(r, isin_data), axis=1)#.set_index('Notification date to ESMA')
+    df = df.apply(lambda r: _apply_issuer_data(r, isin_data), axis=1)#.set_index('Notification date to ESMA')
+    
+    # Now add the remaining columns using dicts
+    df['Issuer Country (full)'] = replace_series_with_combos(df['Issuer Country'], iso_to_name)
+    df['Trading Venue (full)'] = replace_series_with_combos(df['Trading Venue'], mic_to_tv_name)
+    df['Trading Venue Country'] = replace_series_with_combos(df['Trading Venue'], mic_to_tv_country)
+    return df
     
     

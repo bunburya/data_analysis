@@ -39,7 +39,10 @@ else:
 
 df_pub = df.loc[df['Private or Public'] == 'Public']
 
-def get_stacked_bars(series_or_df, colormap=None, sort=True):
+def get_month_label(ts: pd.Timestamp) -> str:
+    return ts.strftime('%b %Y')
+
+def get_stacked_bars(series_or_df, colormap=None, sort=False, fix_timestamps=False):
     """Takes a Series that has been taken from a DataFrame grouped by
     two columns.  Returns a list of Bars, where the x value (label) is
     the "right" index (level 1) and the y values are the "left" index
@@ -55,14 +58,21 @@ def get_stacked_bars(series_or_df, colormap=None, sort=True):
     else:
         raise TypeError('get_stacked_bars takes a DataFrame or a Series')
     
-    y_labels = series.index.levels[0] # countries
-    x_labels = list(series.index.levels[1]) # asset_class
+    y_labels = series.index.levels[0] 
+    x_values = list(series.index.levels[1]) 
+
     if sort:
-        x_labels.sort(key=lambda x: sum([series[y][x] for y in y_labels if x in series[y]]), reverse=True)
+        x_values.sort(key=lambda x: sum([series[y][x] for y in y_labels if x in series[y]]), reverse=True)
+        
+    if fix_timestamps:
+        x_labels = [get_month_label(t) for t in x_values]
+    else:
+        x_labels = x_values
+    
     bars = []
     for y in y_labels:
         y_data = [] # country_data
-        for x in x_labels:
+        for x in x_values:
             try:
                 y_data.append(series[y][x])
             except KeyError:
@@ -72,7 +82,7 @@ def get_stacked_bars(series_or_df, colormap=None, sort=True):
             name=str(y),
             x=x_labels,
             y=y_data,
-            marker={'color': colormap[str(y)]}
+            marker={'color': colormap[y]}
             ))
         else:
             bars.append(go.Bar(
@@ -90,42 +100,53 @@ def get_map(values):
     return new_map
 
 # Create colormaps for consistent colouring of countries, asset classes, etc
-# NOTE:  We convert values to str in these functions to deal with Combos
 def get_colormap(data):
     if len(set(data)) <= len(colors.D3):
         pallette = colors.Plotly
     else:
         pallette = colors.Light24
-    return {c: pallette[i] for i, c in enumerate(sorted(map(str, set(data))))}
+    return {c: pallette[i] for i, c in enumerate(sorted(set(data), key=str))}
 
 def get_colors(values, colormap):
-    return [colormap[str(v)] for v in values]
+    return [colormap[v] for v in values]
 
 oc_colormap = get_colormap(df['Originator Country'].dropna())
+oc_colormap.update({sts.replace_with_combo(c, sts.iso_to_name): oc_colormap[c] for c in oc_colormap})
 ic_colormap = get_colormap(df['Issuer Country'].dropna())
+ic_colormap.update({sts.replace_with_combo(c, sts.iso_to_name): ic_colormap[c] for c in ic_colormap})
 ac_colormap = get_colormap(df['Underlying assets'].dropna())
+currency_colormap = get_colormap(df['Currency'].dropna())
 
 cumul_count = df.groupby('Notification date to ESMA').count().cumsum()['Unique Securitisation Identifier']
 monthly_count = df.resample('M').count()['Unique Securitisation Identifier']
+monthly_count.index = [get_month_label(t) for t in monthly_count.index]
 
 private_public = df.groupby('Private or Public').count()['Unique Securitisation Identifier']
 
 asset_classes = df.groupby('Underlying assets').count()['Unique Securitisation Identifier']
 
 # New securitisations (monthly) (x labels) broken down by asset class (y values)
-new_by_ac = get_stacked_bars(df.groupby(['Underlying assets']).resample('M').count(), colormap=ac_colormap)
+new_by_ac = get_stacked_bars(df.groupby(['Underlying assets']).resample('M').count(), colormap=ac_colormap, fix_timestamps=True)
+
+# STS securitisations by ABCP status
+stss_by_abcp = df.groupby('ABCP status').count()['Unique Securitisation Identifier']
+ac_by_abcp = get_stacked_bars(df.groupby(['ABCP status', 'Underlying assets']).count()['Unique Securitisation Identifier'], sort=True)
 
 # Total securitisations by country of originator
-stss_by_oc = df_pub.groupby('Originator Country').count()['Unique Securitisation Identifier'].astype(str)
-stss_by_oc.index = stss_by_oc.index.astype(str)
+# NOTE:  When building choropleth maps, use ISO codes (ie, "Originator Country" instead of "Originator Country (full)")
+# because the map data we have uses the ISO codes (and having full country names is not necessary when you are looking
+# at a map).
+stss_by_oc_full = df_pub.groupby('Originator Country (full)').count()['Unique Securitisation Identifier']
+
+stss_by_oc = df_pub.groupby('Originator Country').count()['Unique Securitisation Identifier']
 stss_by_oc_flat = sts.flatten_by(df_pub, 'Originator Country').groupby('Originator Country').count()['Unique Securitisation Identifier']
 
 # Choropleth
 oc_map = get_map(set(stss_by_oc_flat.index))
 stss_by_oc_choro = go.Figure(go.Choroplethmapbox(
     geojson=oc_map,
-    locations=stss_by_oc_flat.index,
-    z=stss_by_oc_flat,
+    locations=stss_by_oc_flat.index.astype(str),
+    z=stss_by_oc_flat.astype(str),
     colorscale='Blues',
     zmin=0,
     zmax=stss_by_oc_flat.max(),
@@ -139,44 +160,39 @@ stss_by_oc_choro.update_layout(mapbox_style="light", mapbox_accesstoken=sts.mapb
                   height=1000, title='Number of STS securitisations involving originators in each country')
 
 # Number of securitisations vs GDP for each country
-oc_vs_gdp = sts.flatten_by(df_pub, 'Originator Country').groupby('Originator Country').count()
+oc_vs_gdp = sts.flatten_by(df_pub, 'Originator Country (full)').groupby('Originator Country (full)').count()
 oc_vs_gdp['GDP'] = sts.gdp_data
 oc_vs_gdp = oc_vs_gdp.reindex(['Unique Securitisation Identifier', 'GDP'], axis='columns')
 
 oc_vs_gdp_corr = oc_vs_gdp.astype(float).corr().iloc[0][1]
 
 # Asset classes (y values) broken down by originator country (x labels)
-ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country').groupby(['Underlying assets', 'Originator Country']).count(),
-                            colormap=ac_colormap)
+ac_by_oc = get_stacked_bars(sts.flatten_by(df_pub, 'Originator Country (full)').groupby(['Underlying assets', 'Originator Country (full)']).count(),
+                            colormap=ac_colormap, sort=True)
 
 # New securitisations (monthly) by country of originator
-new_by_oc = get_stacked_bars(df_pub.groupby(['Originator Country']).resample('M').count(),
-                            colormap=oc_colormap)
+#print('LEN', len(df_pub), len(df_pub['Originator Country (full)']), len(df_pub.groupby(['Originator Country (full)']).count()))
+new_by_oc = get_stacked_bars(df_pub.groupby('Originator Country (full)').resample('M')['Unique Securitisation Identifier'].count(),
+                            colormap=oc_colormap, fix_timestamps=True)
 
 # Table setting out the number of securitisations with originators in country X vs issuers in country Y
-flat_oc_ic = sts.flatten_by(sts.flatten_by(df_pub, 'Originator Country'), 'Issuer Country')
-oc_vs_ic = pd.crosstab(flat_oc_ic['Originator Country'], flat_oc_ic['Issuer Country'], dropna=False, margins=True)
-oc_vs_ic_dt_cols = [{'id': 'Originator Country', 'name': 'Originator Country'}] + [{'name': c, 'id': c} for c in oc_vs_ic.columns]
+flat_oc_ic = sts.flatten_by(sts.flatten_by(df_pub, 'Originator Country (full)'), 'Issuer Country (full)')
+oc_vs_ic = pd.crosstab(flat_oc_ic['Originator Country (full)'], flat_oc_ic['Issuer Country (full)'], dropna=False, margins=True)
+_all_vals = sorted(set(oc_vs_ic.index).union(set(oc_vs_ic.columns)))
+_all_vals.sort(key='All'.__eq__) # Move All to end
+oc_vs_ic = oc_vs_ic.reindex(index=_all_vals, columns=_all_vals, fill_value=0)
+    
+oc_vs_ic_dt_cols = [{'id': 'Originator Country (full)', 'name': 'Originator Country'}] + [{'name': c, 'id': c} for c in oc_vs_ic.columns]
 oc_vs_ic_dt_data = oc_vs_ic.to_dict('records')
 for i, c in enumerate(oc_vs_ic.index):
-    oc_vs_ic_dt_data[i]['Originator Country'] = c
+    oc_vs_ic_dt_data[i]['Originator Country (full)'] = c
+oc_vs_ic_dt_style = {'width': str(100 // (len(oc_vs_ic.columns)+1)) + '%'}
 
-diff_oc_ic = df_pub[~sts.eq_with_combos(df_pub['Issuer Country'], df_pub['Originator Country'])]
-diff_by_ic = sts.flatten_by(diff_oc_ic, 'Issuer Country').groupby('Issuer Country').count()['Unique Securitisation Identifier']
-ic_map = get_map(set(diff_by_ic.index))
-diff_by_ic_choro = go.Figure(go.Choroplethmapbox(
-    geojson=ic_map,
-    locations=diff_by_ic.index,
-    z=diff_by_ic,
-    colorscale='Blues',
-    zmin=0,
-    zmax=diff_by_ic.max(),
-    marker_opacity=1,
-    marker_line_width=0.5,
-    name='Number of STS securitisations involving issuers in each country (excluding those where the issuer is in the same country as the originator)'
-))
-diff_by_ic_choro.update_layout(mapbox_style="light", mapbox_accesstoken=sts.mapbox_token,
-    mapbox_zoom=3.5, mapbox_center = {"lat": 55.402021, "lon": 9.613549},
-    scene={'aspectratio': {'x': 100, 'y': 100, 'z': 100}},
-    height=1000, title='Number of STS securitisations involving issuers in each country (excluding those where the issuer is in the same country as the originator)')
+# Securitisations by issuer country (excluding those where issuer country == originator country)
+diff_oc_ic = df_pub[~sts.eq_with_combos(df_pub['Issuer Country (full)'], df_pub['Originator Country (full)'])]
+diff_by_ic = sts.flatten_by(diff_oc_ic, 'Issuer Country (full)').groupby('Issuer Country (full)').count()['Unique Securitisation Identifier']
 
+# Securitisations by currency
+stss_by_currency = df_pub.groupby('Currency').count()['Unique Securitisation Identifier']
+oc_by_currency = get_stacked_bars(sts.flatten_by(sts.flatten_by(df_pub, 'Currency'), 'Originator Country (full)').groupby(['Currency', 'Originator Country (full)']).count(),
+                    colormap=currency_colormap, sort=True)

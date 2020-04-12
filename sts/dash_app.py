@@ -62,22 +62,6 @@ app.layout = html.Div(children=[
         }
     ),
     
-    html.Div(dcc.Markdown(md.private_public)),
-    
-    dcc.Graph(
-        id='private_public',
-        figure={
-            'data': [{
-                'values': cd.private_public,
-                'labels': cd.private_public.index,
-                'type': 'pie'
-            }],
-            'layout': {
-                'title': 'Private vs public STS securitisations'
-            }
-        }
-    ),
-    
     html.Div(dcc.Markdown(md.asset_classes_pie)),
     
     dcc.Graph(
@@ -111,14 +95,61 @@ app.layout = html.Div(children=[
         }
     ),
     
+    html.Div(dcc.Markdown(md.stss_by_abcp)),
+    
+    dcc.Graph(
+        id='stss_by_abcp',
+        figure={
+            'data': [{
+                'values': cd.stss_by_abcp,
+                'labels': cd.stss_by_abcp.index,
+                'type': 'pie'
+            }],
+            'layout': {
+                'title': 'Proportion of STS securitisations which are ABCP transactions or ABCP programmes'
+            }
+        }
+    ),
+    
+    html.Div(dcc.Markdown(md.ac_by_abcp)),
+    
+    dcc.Graph(
+        id='ac_by_abcp',
+        figure={
+            'data': cd.ac_by_abcp,
+            'layout': {
+                'barmode': 'stack',
+                'title': 'Proportion of STS securitisations which are ABCP, by asset class',
+            }
+        }
+    ),
+    
+    html.Div(dcc.Markdown(md.private_public)),
+    
+    dcc.Graph(
+        id='private_public',
+        figure={
+            'data': [{
+                'values': cd.private_public,
+                'labels': cd.private_public.index,
+                'type': 'pie'
+            }],
+            'layout': {
+                'title': 'Private vs public STS securitisations'
+            }
+        }
+    ),
+    
+    
+    
     html.Div(dcc.Markdown(md.stss_by_oc)),
     
     dcc.Graph(
         id='stss_by_oc_pie',
         figure={
             'data': [{
-                'values': cd.stss_by_oc,
-                'labels': cd.stss_by_oc.index,
+                'values': cd.stss_by_oc_full.astype(str),
+                'labels': cd.stss_by_oc_full.index.astype(str),
                 'type': 'pie',
                 'marker': {
                     'colors': cd.get_colors(cd.stss_by_oc.index, cd.oc_colormap)
@@ -183,16 +214,59 @@ app.layout = html.Div(children=[
     dt.DataTable(
         id='oc_vs_ic',
         columns=cd.oc_vs_ic_dt_cols,
-        data=cd.oc_vs_ic_dt_data
+        data=cd.oc_vs_ic_dt_data,
+        style_cell=cd.oc_vs_ic_dt_style
     ),
     
     html.Div(dcc.Markdown(md.diff_by_ic)),
     
     dcc.Graph(
-        id='diff_by_ic_choro',
-        figure=cd.diff_by_ic_choro
-    )
+        id='diff_by_ic',
+        figure={
+            'data': [{
+                'values': cd.diff_by_ic,
+                'labels': cd.diff_by_ic.index,
+                'type': 'pie'
+            }],
+            'layout': {
+                'title': 'Number of STS securitisations involving issuers from each country, excluding securitisations where the issuer and originator are located in the same country'
+            }
+        }
+    ),
     
+    html.Div(dcc.Markdown(md.stss_by_currency)),
+    
+    dcc.Graph(
+        id='stss_by_currency',
+        figure={
+            'data': [{
+                'values': cd.stss_by_currency.astype(str),
+                'labels': cd.stss_by_currency.index.astype(str),
+                'type': 'pie',
+                'marker': {
+                    'colors': cd.get_colors(cd.stss_by_currency.index, cd.currency_colormap)
+                }
+            }],
+            'layout': {
+                'title': 'STS securitisations broken down by currency'
+            }
+        }
+    ),
+    
+    html.Div(dcc.Markdown(md.oc_by_currency)),
+    
+    dcc.Graph(
+        id='oc_by_currency',
+        figure={
+            'data': cd.oc_by_currency,
+            'layout': {
+                'barmode': 'stack',
+                'title': 'Currency of securitisation by country of originator'
+            }
+        }
+    ),
+    
+    html.Div(dcc.Markdown(md.sources))
     
 ])
 
