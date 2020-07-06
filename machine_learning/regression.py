@@ -71,13 +71,13 @@ class BaseRegression:
             theta = t_start
         num_steps = 0
         h = self.get_hypothesis(theta)
-        old_cost = self.cost_function(h)
+        old_cost = self.cost_function(theta)
         while True:
             num_steps += 1
             delta = self.delta(theta)
             theta = theta - ((a / self.m) * delta)
             new_h = self.get_hypothesis(theta)
-            new_cost = self.cost_function(new_h)
+            new_cost = self.cost_function(theta)
             if new_cost > old_cost:
                 raise NonConvergenceError(f'Failed to converge: latest cost ({new_cost}) is greater than previous cost ({old_cost}) at step {num_steps}.')
             if (
