@@ -11,8 +11,8 @@ import yfinance as yf
 import sqlite3
 
 
-ROBINTRACK_DIR = 'data_files/robintrack/stocks'
 SP500_URL = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+ROBINTRACK_DIR = 'data_files/robintrack/stocks'
 
 DB_TABLES = {
     'tickers': """CREATE TABLE IF NOT EXISTS \"{table_name}\" (
@@ -96,15 +96,18 @@ def write_stock_data_to_db(ticker: str, conn: sqlite3.Connection):
     stock_data = get_stock_data(ticker)
     stock_data.to_sql('stock_data', conn, if_exists='append')
 
+def drop_db_tables(cursor: sqlite3.Cursor):
+    for table_name in DB_TABLES:
+        logging.info(f'Dropping table {table_name}.')
+        try:
+            cursor.execute(f'DROP TABLE "{table_name}"')
+        except sqlite3.OperationalError:
+            # Table probably doesn't exist, which is fine
+            pass
+
 def create_db_tables(cursor: sqlite3.Cursor, drop_first: bool = True):
     if drop_first:
-        for table_name in DB_TABLES:
-            logging.info(f'Dropping table {table_name}.')
-            try:
-                cursor.execute(f'DROP TABLE "{table_name}"')
-            except sqlite3.OperationalError:
-                # Table probably doesn't exist, which is fine
-                pass
+        drop_db_tables(cursor)
     for table_name in DB_TABLES:
         logging.info(f'Creating table {table_name}.')
         cursor.execute(DB_TABLES[table_name].format(table_name=table_name))
@@ -114,8 +117,10 @@ def main(db_file: str):
     cursor = conn.cursor()
     create_db_tables()
     sp500_data = get_sp500_data()
-    sp500_data.to_sql(conn)
+    sp500_data.to_sql('tickers', conn, if_exists='append')
     for ticker in sp500_data.index:
         write_stock_data_to_db(ticker, conn)
     
-        
+if __name__ == '__main__':
+    from sys import argv
+    main(argv[1])
