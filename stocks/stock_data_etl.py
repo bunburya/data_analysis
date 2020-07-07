@@ -10,9 +10,10 @@ import pandas as pd
 import yfinance as yf
 import sqlite3
 
+logging.getLogger().setLevel(20)
 
 SP500_URL = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-ROBINTRACK_DIR = 'data_files/robintrack/stocks'
+ROBINTRACK_DIR = 'data_files/robintrack'
 
 DB_TABLES = {
     'tickers': """CREATE TABLE IF NOT EXISTS \"{table_name}\" (
@@ -52,8 +53,8 @@ def fix_col_labels(df: pd.DataFrame, inplace: bool = False) -> pd.DataFrame:
 
 def get_sp500_data() -> pd.DataFrame:
     sp500_data = pd.read_html(SP500_URL)[0]
-    sp500_data.drop('SEC filings', inplace=True)
-    sp500_data.rename({
+    sp500_data.drop('SEC filings', axis=1, inplace=True)
+    sp500_data.rename(columns={
         'Symbol': 'ticker',
         'Security': 'stock_name',
         'GICS Sector': 'gics_sector',
@@ -66,7 +67,6 @@ def get_sp500_data() -> pd.DataFrame:
     sp500_data.set_index('ticker', inplace=True)
     return sp500_data
         
-
 def get_robintrack_data(ticker: str, stocks_dir: str) -> pd.DataFrame:
     fname = f'{ticker.upper()}.csv'
     stock_data = pd.read_csv(join(stocks_dir, fname))
@@ -81,8 +81,9 @@ def get_stock_data(ticker: str) -> pd.DataFrame:
     rt_history = get_robintrack_data(ticker, ROBINTRACK_DIR)
     # For some reason, yfinance fetches one day before start_date
     start_date = rt_history.index[0].date() + timedelta(days=1)
-    yf_history = yf.Ticker(ticker).history(start=start_date)
-    stock_data = pd.concat((rt_history, yf_history), axis=1)
+    end_date = rt_history.index[-1].date()
+    stock_data = yf.Ticker(ticker.replace('.', '-')).history(start=start_date, end=end_date)
+    stock_data['robinhood_holders'] = rt_history['robinhood_holders']
     stock_data['ticker'] = ticker # for indexing in SQL
     stock_data.columns = stock_data.columns.str.lower().str.replace(' ', '_')
     return stock_data
@@ -94,7 +95,7 @@ def write_stock_data_to_db(ticker: str, conn: sqlite3.Connection):
     """
     logging.info(f'Writing historical data for ticker {ticker} to table stock_data.')
     stock_data = get_stock_data(ticker)
-    stock_data.to_sql('stock_data', conn, if_exists='append')
+    stock_data.to_sql('stock_data', conn, if_exists='append', index_label='date')
 
 def drop_db_tables(cursor: sqlite3.Cursor):
     for table_name in DB_TABLES:
@@ -115,7 +116,7 @@ def create_db_tables(cursor: sqlite3.Cursor, drop_first: bool = True):
 def main(db_file: str):
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
-    create_db_tables()
+    create_db_tables(cursor)
     sp500_data = get_sp500_data()
     sp500_data.to_sql('tickers', conn, if_exists='append')
     for ticker in sp500_data.index:
